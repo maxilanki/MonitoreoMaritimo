@@ -4,12 +4,7 @@ import threading
 import websocket
 from flask import Flask, render_template
 from flask_socketio import SocketIO
-
-try:
-    from dotenv import load_dotenv
-except ImportError:  # pragma: no cover - optional dependency for local development
-    def load_dotenv(*args, **kwargs):
-        return False
+from dotenv import load_dotenv
 
 load_dotenv()
 
