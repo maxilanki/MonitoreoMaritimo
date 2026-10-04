@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manzanillo MarineTraffic - AIS Live Tracker</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""/>
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    
+    <style>
+        /* Custom scrollbars and map customization */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #0d9488;
+        }
+        .leaflet-container {
+            background-color: #0b1329 !important;
+            font-family: inherit;
+        }
+        .vessel-icon-wrapper {
+            transition: transform 0.3s ease-out;
+        }
+        .pulse-online {
+            box-shadow: 0 0 0 0 rgba(13, 148, 136, 0.7);
+            animation: pulse-green 2s infinite;
+        }
+        @keyframes pulse-green {
+            0% { box-shadow: 0 0 0 0 rgba(13, 148, 136, 0.7); }
+            70% { box-shadow: 0 0 0 8px rgba(13, 148, 136, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(13, 148, 136, 0); }
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 h-screen w-screen overflow-hidden flex flex-col font-sans">
+
+    <!-- Top Navigation Bar -->
+    <header class="h-14 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-4 z-20 shrink-0">
+        <div class="flex items-center space-x-3">
+            <div class="bg-teal-500/10 p-2 rounded-lg border border-teal-500/30 text-teal-400">
+                <i class="fa-solid font-bold fa-ship text-lg"></i>
+            </div>
+            <div>
+                <h1 class="font-bold text-slate-100 tracking-wide text-sm sm:text-base flex items-center gap-2">
+                    PUERTO DE MANZANILLO 
+                    <span class="bg-teal-950 text-teal-400 border border-teal-800 text-[10px] px-2 py-0.5 rounded-full uppercase font-mono">Live AIS</span>
+                </h1>
+                <p class="text-xs text-slate-400 hidden sm:block">Control de Tráfico Marítimo & Telemetría en Tiempo Real</p>
+            </div>
+        </div>
+
+        <div class="flex items-center space-x-3">
+            <div id="connectionStatus" class="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-full text-xs text-emerald-400 border border-slate-700">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 pulse-online"></span>
+                <span class="font-mono font-medium hidden md:inline">STREAM ACTIVO</span>
+            </div>
+            <button id="toggleSidebarBtn" class="lg:hidden p-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300">
+                <i class="fa-solid fa-bars"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Container: Map + Panel -->
+    <div class="flex-1 flex relative overflow-hidden">
+        
+        <!-- Interactive Map Container -->
+        <div id="map" class="flex-1 h-full w-full z-10"></div>
+
+        <!-- Floating Quick Control / Search Bar on Map -->
+        <div class="absolute top-4 left-4 z-20 w-72 sm:w-80 bg-slate-900/90 backdrop-blur-md p-3 rounded-xl border border-slate-800 shadow-xl space-y-2">
+            <div class="relative">
+                <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-xs"></i>
+                <input type="text" id="searchInput" placeholder="Buscar por Nombre o MMSI..." 
+                    class="w-full bg-slate-950 border border-slate-700 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-teal-500 transition-colors">
+            </div>
+            <div class="flex gap-2 text-xs">
+                <select id="typeFilter" class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-slate-300 focus:outline-none focus:border-teal-500">
+                    <option value="ALL">Todos los Tipos</option>
+                    <option value="Container">Portacontenedores</option>
+                    <option value="Tanker">Tanqueros</option>
+                    <option value="Cargo">Carga General</option>
+                    <option value="Tug">Remolcadores</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Sidebar / Telemetry Dashboard Panel -->
+        <aside id="sidebar" class="absolute lg:relative right-0 top-0 h-full w-80 sm:w-96 bg-slate-900/95 lg:bg-slate-900 border-l border-slate-800 z-30 transform translate-x-full lg:translate-x-0 transition-transform duration-300 flex flex-col shadow-2xl">
+            
+            <!-- Panel Header -->
+            <div class="p-4 border-b border-slate-800 flex justify-between items-center">
+                <h2 class="font-bold text-sm tracking-wider uppercase text-slate-300 flex items-center gap-2">
+                    <i class="fa-solid fa-chart-line text-teal-400"></i> Panel de Monitoreo
+                </h2>
+                <button id="closeSidebarBtn" class="lg:hidden text-slate-400 hover:text-slate-100">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <!-- Stats Grid -->
+            <div class="p-4 grid grid-cols-2 gap-3 border-b border-slate-800">
+                <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                    <span class="text-[10px] text-slate-400 uppercase tracking-wider block font-semibold">Buques Activos</span>
+                    <span id="statActiveVessels" class="text-xl font-bold font-mono text-teal-400">0</span>
+                </div>
+                <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                    <span class="text-[10px] text-slate-400 uppercase tracking-wider block font-semibold">Vel. Promedio</span>
+                    <span id="statAvgSpeed" class="text-xl font-bold font-mono text-cyan-400">0.0 <span class="text-xs font-normal text-slate-500">kts</span></span>
+                </div>
+            </div>
+
+            <!-- Vessels List -->
+            <div class="flex-1 flex flex-col min-h-0">
+                <div class="px-4 py-2 bg-slate-950/40 border-b border-slate-800/60 flex justify-between items-center">
+                    <span class="text-xs font-semibold text-slate-400">TRÁFICO EN TIEMPO REAL</span>
+                    <span class="text-[10px] text-slate-500 font-mono" id="lastUpdate">Actualizado ahora</span>
+                </div>
+                <div id="vesselsList" class="flex-1 overflow-y-auto p-3 space-y-2">
+                    <!-- Dynamic Vessels injected here -->
+                </div>
+            </div>
+
+            <!-- Live Message Stream Log -->
+            <div class="h-36 bg-slate-950 border-t border-slate-800 p-3 flex flex-col font-mono text-[11px]">
+                <div class="text-slate-500 text-[10px] mb-1 flex items-center justify-between">
+                    <span>CONSOLA DE MENSAJES AIS</span>
+                    <span class="w-1.5 h-1.5 rounded-full bg-teal-400 animate-ping"></span>
+                </div>
+                <div id="aisLog" class="flex-1 overflow-y-auto space-y-1 text-slate-400">
+                    <!-- Terminal logs appended here -->
+                </div>
+            </div>
+        </aside>
+
+    </div>
+
+    <!-- Vessel Details Modal / Card Overlay -->
+    <div id="vesselModal" class="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl transform transition-all scale-95 opacity-0" id="modalCard">
+            <!-- Modal Header -->
+            <div class="bg-slate-800 p-4 border-b border-slate-700 flex justify-between items-start">
+                <div>
+                    <div class="flex items-center gap-2">
+                        <span id="modalVesselTypeBadge" class="bg-teal-500/20 text-teal-300 text-[10px] px-2 py-0.5 rounded font-mono uppercase border border-teal-500/30">Carga</span>
+                        <span id="modalMmsi" class="text-xs font-mono text-slate-400">MMSI: 352001928</span>
+                    </div>
+                    <h3 id="modalVesselName" class="text-lg font-bold text-slate-100 mt-1">MSC FLAVIA</h3>
+                </div>
+                <button id="closeModalBtn" class="text-slate-400 hover:text-slate-200 p-1">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+            <!-- Modal Body Telemetry -->
+            <div class="p-4 space-y-4 text-xs">
+                <div class="grid grid-cols-2 gap-3 bg-slate-950 p-3 rounded-xl border border-slate-800/80 font-mono">
+                    <div>
+                        <span class="text-slate-500 block text-[10px]">VELOCIDAD (SOG)</span>
+                        <span id="modalSpeed" class="text-sm font-semibold text-teal-400">12.4 kts</span>
+                    </div>
+                    <div>
+                        <span class="text-slate-500 block text-[10px]">RUMBO (HEADING)</span>
+                        <span id="modalHeading" class="text-sm font-semibold text-teal-400">210°</span>
+                    </div>
+                    <div>
+                        <span class="text-slate-500 block text-[10px]">LATITUD</span>
+                        <span id="modalLat" class="text-slate-300">19.0482 N</span>
+                    </div>
+                    <div>
+                        <span class="text-slate-500 block text-[10px]">LONGITUD</span>
+                        <span id="modalLon" class="text-slate-300">-104.3190 W</span>
+                    </div>
+                </div>
+
+                <div class="space-y-2">
+                    <div class="flex justify-between border-b border-slate-800 py-1">
+                        <span class="text-slate-400">Destino:</span>
+                        <span id="modalDestination" class="font-semibold text-slate-200">MX ZLO (Manzanillo)</span>
+                    </div>
+                    <div class="flex justify-between border-b border-slate-800 py-1">
+                        <span class="text-slate-400">Eslora / Manga:</span>
+                        <span id="modalDimensions" class="text-slate-200">300m x 48m</span>
+                    </div>
+                    <div class="flex justify-between border-b border-slate-800 py-1">
+                        <span class="text-slate-400">Calado (Draft):</span>
+                        <span id="modalDraft" class="text-slate-200">14.2 m</span>
+                    </div>
+                    <div class="flex justify-between py-1">
+                        <span class="text-slate-400">Bandera / Registro:</span>
+                        <span id="modalFlag" class="text-slate-200">Panamá 🇵🇦</span>
+                    </div>
+                </div>
+            </div>
+            <!-- Modal Footer -->
+            <div class="bg-slate-950 p-3 border-t border-slate-800 flex justify-end">
+                <button id="centerMapOnVesselBtn" class="bg-teal-600 hover:bg-teal-500 text-white text-xs px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2">
+                    <i class="fa-solid fa-crosshairs"></i> Centrar en Mapa
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript Application Logic -->
+    <script>
+
+        const socket = io('http://localhost:5000');
+
+socket.on('vessel_update', (barco) => {
+    console.log("Barco recibido en vivo:", barco);
+    
+    // Aquí actualizas o agregas el marcador en el mapa de Leaflet
+    L.marker([barco.lat, barco.lng])
+     .addTo(map)
+     .bindPopup(`<b>${barco.name}</b><br>Velocidad: ${barco.sog} nudos`);
+});
+
+        // --- 1. CONFIGURATION & STATE ---
+        const MANZANILLO_COORDS = [19.052, -104.325];
+        const MAP_ZOOM = 13;
+
+        // Vessel Colors Palette by Type
+        const TYPE_COLORS = {
+            'Container': '#0d9488', // Teal
+            'Tanker': '#e11d48',    // Rose/Red
+            'Cargo': '#3b82f6',     // Blue
+            'Tug': '#f59e0b'        // Amber
+        };
+         
+  
+
+        // Initial Seed Ships for Manzanillo Bay & Approaches
+        let vessels = [
+            { id: 1, mmsi: "352001928", name: "MAERSK MANZANILLO", type: "Container", lat: 19.045, lon: -104.340, speed: 10.2, heading: 85, length: 299, draft: 12.5, dest: "Terminal TEC II", flag: "Panamá 🇵🇦" },
+            { id: 2, mmsi: "538008123", name: "PACIFIC EXPLORER", type: "Cargo", lat: 19.070, lon: -104.370, speed: 14.1, heading: 110, length: 180, draft: 8.9, dest: "Zona de Fondeo", flag: "Islas Marshall 🇲🇭" },
+            { id: 3, mmsi: "311000456", name: "PEMEX COLIMA", type: "Tanker", lat: 19.028, lon: -104.310, speed: 0.2, heading: 340, length: 228, draft: 11.2, dest: "Muelle PEMEX", flag: "México 🇲🇽" },
+            { id: 4, mmsi: "345998112", name: "REMOLCADOR AZTECA IV", type: "Tug", lat: 19.061, lon: -104.305, speed: 6.5, heading: 240, length: 32, draft: 4.1, dest: "Asistencia Dársena", flag: "México 🇲🇽" },
+            { id: 5, mmsi: "636019882", name: "CMA CGM COLIMA", type: "Container", lat: 19.010, lon: -104.410, speed: 18.5, heading: 60, length: 336, draft: 14.8, dest: "MX ZLO Entrada", flag: "Liberia 🇱🇷" }
+        ];
+
+        let markers = {};
+        let selectedVesselId = null;
+
+        // --- 2. LEAFLET MAP INITIALIZATION ---
+              // 1. Definir los mapas de fondo
+const mapaCalles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png');
+const satelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}');
+
+// 2. Inicializar el mapa con uno por defecto
+const map = L.map('map', {
+    center: [19.05, -104.32], // Coordenadas de Manzanillo
+    zoom: 12,
+    layers: [satelite] // Fondo por defecto
+});
+
+// 3. Crear el control para alternar entre fondos
+const fondosBase = {
+    "Satelital": satelite,
+    "Mapa de Calles": mapaCalles
+};
+
+L.control.layers(fondosBase).addTo(map);
+
+        // --- 3. CUSTOM VESSEL ICONS ---
+        function createVesselSVG(color, heading) {
+            return `
+            <div class="vessel-icon-wrapper" style="transform: rotate(${heading}deg);">
+                <svg width="24" height="28" viewBox="0 0 24 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 0L22 22L12 18L2 22L12 0Z" fill="${color}" stroke="#0f172a" stroke-width="2"/>
+                </svg>
+            </div>`;
+        }
+
+        function getMarkerIcon(vessel) {
+            const color = TYPE_COLORS[vessel.type] || '#38bdf8';
+            return L.divIcon({
+                html: createVesselSVG(color, vessel.heading),
+                className: 'custom-vessel-marker',
+                iconSize: [24, 28],
+                iconAnchor: [12, 14]
+            });
+        }
+
+        // --- 4. RENDER & UPDATE MARKERS ---
+        function updateMapMarkers() {
+            vessels.forEach(vessel => {
+                if (markers[vessel.id]) {
+                    // Update position and icon orientation smoothly
+                    markers[vessel.id].setLatLng([vessel.lat, vessel.lon]);
+                    markers[vessel.id].setIcon(getMarkerIcon(vessel));
+                } else {
+                    // Create new marker
+                    const marker = L.marker([vessel.lat, vessel.lon], {
+                        icon: getMarkerIcon(vessel)
+                    }).addTo(map);
+
+                    marker.on('click', () => {
+                        openVesselDetails(vessel.id);
+                    });
+
+                    markers[vessel.id] = marker;
+                }
+            });
+        }
+
+        // --- 5. RENDER SIDEBAR LIST & STATS ---
+        function updateUI() {
+            const searchVal = document.getElementById('searchInput').value.toLowerCase();
+            const typeVal = document.getElementById('typeFilter').value;
+
+            const filteredVessels = vessels.filter(v => {
+                const matchesSearch = v.name.toLowerCase().includes(searchVal) || v.mmsi.includes(searchVal);
+                const matchesType = typeVal === 'ALL' || v.type === typeVal;
+                return matchesSearch && matchesType;
+            });
+
+            // Update Statistics
+            document.getElementById('statActiveVessels').innerText = vessels.length;
+            const avgSpd = (vessels.reduce((acc, v) => acc + v.speed, 0) / (vessels.length || 1)).toFixed(1);
+            document.getElementById('statAvgSpeed').innerHTML = `${avgSpd} <span class="text-xs font-normal text-slate-500">kts</span>`;
+
+            // Update Roster List
+            const listEl = document.getElementById('vesselsList');
+            listEl.innerHTML = '';
+
+            filteredVessels.forEach(vessel => {
+                const typeColor = TYPE_COLORS[vessel.type] || '#38bdf8';
+                const card = document.createElement('div');
+                card.className = `p-3 rounded-xl bg-slate-950/70 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all flex justify-between items-center ${selectedVesselId === vessel.id ? 'ring-1 ring-teal-500 bg-slate-950' : ''}`;
+                card.onclick = () => openVesselDetails(vessel.id);
+
+                card.innerHTML = `
+                    <div class="space-y-1">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2 h-2 rounded-full" style="background-color: ${typeColor};"></span>
+                            <span class="font-bold text-xs text-slate-200 tracking-wide">${vessel.name}</span>
+                        </div>
+                        <div class="text-[10px] text-slate-400 font-mono">MMSI: ${vessel.mmsi} • ${vessel.type}</div>
+                    </div>
+                    <div class="text-right">
+                        <span class="font-mono text-xs text-teal-400 font-semibold block">${vessel.speed.toFixed(1)} kts</span>
+                        <span class="text-[10px] text-slate-500 font-mono">${vessel.heading}°</span>
+                    </div>
+                `;
+                listEl.appendChild(card);
+            });
+
+            const now = new Date();
+            document.getElementById('lastUpdate').innerText = `Actualizado ${now.toLocaleTimeString()}`;
+        }
+
+        // --- 6. LIVE AIS SIMULATION / WEBSOCKET STREAMING ---
+        function appendLog(msg) {
+            const logContainer = document.getElementById('aisLog');
+            const logEntry = document.createElement('div');
+            logEntry.className = "text-[10px] font-mono leading-tight py-0.5 border-b border-slate-900/50 flex gap-2";
+            const time = new Date().toLocaleTimeString();
+            logEntry.innerHTML = `<span class="text-slate-600">[${time}]</span> <span>${msg}</span>`;
+            logContainer.prepend(logEntry);
+
+            // Keep log count under 25 entries
+            if (logContainer.children.length > 25) {
+                logContainer.removeChild(logContainer.lastChild);
+            }
+        }
+
+        function simulateAisStream() {
+            // Randomly advance positions slightly to mimic movement
+            vessels.forEach(v => {
+                if (v.speed > 0.5) {
+                    // Convert knots to slight lat/lon increment
+                    const speedFactor = (v.speed * 0.00005);
+                    const rad = (v.heading * Math.PI) / 180;
+                    v.lat += Math.cos(rad) * speedFactor;
+                    v.lon += Math.sin(rad) * speedFactor;
+
+                    // Slight bearing jitter
+                    v.heading = (v.heading + (Math.random() * 2 - 1) + 360) % 360;
+                    v.heading = Math.round(v.heading);
+                }
+            });
+
+            // Randomly pick a ship to emit a log message
+            const randomVessel = vessels[Math.floor(Math.random() * vessels.length)];
+            appendLog(`POS_REPORT: ${randomVessel.name} (${randomVessel.mmsi}) lat:${randomVessel.lat.toFixed(4)} lon:${randomVessel.lon.toFixed(4)}`);
+
+            updateMapMarkers();
+            updateUI();
+        }
+
+        // Spawn occasional new vessel entering the bay
+        function spawnOccasionalVessel() {
+            if (vessels.length >= 8) return; // limit count
+
+            const types = ['Container', 'Tanker', 'Cargo', 'Tug'];
+            const names = ['EVER GIVEN', 'HAPAG LLOYD COLIMA', 'MARITIMA BANDERAS', 'VALE BRASIL'];
+            const selectedType = types[Math.floor(Math.random() * types.length)];
+            const selectedName = names[Math.floor(Math.random() * names.length)] + " " + Math.floor(Math.random() * 90 + 10);
+            
+            const newVessel = {
+                id: Date.now(),
+                mmsi: (300000000 + Math.floor(Math.random() * 89999999)).toString(),
+                name: selectedName,
+                type: selectedType,
+                lat: 18.98 + (Math.random() * 0.04),
+                lon: -104.42 + (Math.random() * 0.04),
+                speed: parseFloat((8 + Math.random() * 10).toFixed(1)),
+                heading: Math.floor(40 + Math.random() * 40),
+                length: Math.floor(120 + Math.random() * 200),
+                draft: parseFloat((6 + Math.random() * 8).toFixed(1)),
+                dest: "Puerto Manzanillo",
+                flag: "Internacional 🌐"
+            };
+
+            vessels.push(newVessel);
+            appendLog(`NUEVO BUQUE EN DETECCIÓN: ${newVessel.name}`);
+            updateMapMarkers();
+            updateUI();
+        }
+
+        // --- 7. MODAL DETAILS HANDLER ---
+        function openVesselDetails(vesselId) {
+            const vessel = vessels.find(v => v.id === vesselId);
+            if (!vessel) return;
+
+            selectedVesselId = vesselId;
+            updateUI();
+
+            document.getElementById('modalVesselName').innerText = vessel.name;
+            document.getElementById('modalMmsi').innerText = `MMSI: ${vessel.mmsi}`;
+            document.getElementById('modalVesselTypeBadge').innerText = vessel.type;
+            document.getElementById('modalSpeed').innerText = `${vessel.speed.toFixed(1)} kts`;
+            document.getElementById('modalHeading').innerText = `${vessel.heading}°`;
+            document.getElementById('modalLat').innerText = `${vessel.lat.toFixed(4)} N`;
+            document.getElementById('modalLon').innerText = `${vessel.lon.toFixed(4)} W`;
+            document.getElementById('modalDestination').innerText = vessel.dest;
+            document.getElementById('modalDimensions').innerText = `${vessel.length}m eslora`;
+            document.getElementById('modalDraft').innerText = `${vessel.draft} m`;
+            document.getElementById('modalFlag').innerText = vessel.flag;
+
+            const modal = document.getElementById('vesselModal');
+            const card = document.getElementById('modalCard');
+            modal.classList.remove('hidden');
+            setTimeout(() => {
+                card.classList.remove('scale-95', 'opacity-0');
+                card.classList.add('scale-100', 'opacity-100');
+            }, 10);
+        }
+
+        function closeModal() {
+            const card = document.getElementById('modalCard');
+            card.classList.remove('scale-100', 'opacity-100');
+            card.classList.add('scale-95', 'opacity-0');
+            setTimeout(() => {
+                document.getElementById('vesselModal').classList.add('hidden');
+            }, 200);
+        }
+
+        // --- 8. EVENT LISTENERS ---
+        document.getElementById('closeModalBtn').onclick = closeModal;
+        document.getElementById('vesselModal').onclick = (e) => {
+            if (e.target === document.getElementById('vesselModal')) closeModal();
+        };
+
+        document.getElementById('centerMapOnVesselBtn').onclick = () => {
+            const vessel = vessels.find(v => v.id === selectedVesselId);
+            if (vessel) {
+                map.flyTo([vessel.lat, vessel.lon], 15, { duration: 1.2 });
+                closeModal();
+            }
+        };
+
+        // Sidebar Responsive Toggle
+        const sidebar = document.getElementById('sidebar');
+        document.getElementById('toggleSidebarBtn').onclick = () => {
+            sidebar.classList.toggle('translate-x-full');
+        };
+        document.getElementById('closeSidebarBtn').onclick = () => {
+            sidebar.classList.add('translate-x-full');
+        };
+
+        // Filter Inputs
+        document.getElementById('searchInput').oninput = updateUI;
+        document.getElementById('typeFilter').onchange = updateUI;
+
+        // --- 9. INITIAL STARTUP ---
+        window.onload = () => {
+            appendLog("SISTEMA DE TELEMETRÍA CONECTADO [MANZANILLO]");
+            appendLog("RECIBIENDO FLUJO DE POSICIONES AIS EN VIVO...");
+            updateMapMarkers();
+            updateUI();
+
+            // Interval loops
+            setInterval(simulateAisStream, 3000);     // Positions move every 3s
+            setInterval(spawnOccasionalVessel, 20000); // Check new vessels every 20s
+        };
+    </script>
+</body>
+</html>
